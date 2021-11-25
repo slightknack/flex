@@ -13,7 +13,9 @@ pub struct Pointer(u64);
 // TODO: integrate the range set with the heap to combat fragmentation.
 
 // keeps track of unallocated ranges of slots
+#[derive(Debug)]
 pub struct RangeSet {
+    capacity: usize,
     // slots before, length of range
     ranges: BTreeMap<Pointer, usize>,
     // length -> start of range
@@ -22,48 +24,107 @@ pub struct RangeSet {
 }
 
 impl RangeSet {
-    pub fn mark_first(&mut self, slots: usize) -> Pointer {
-        for (size, potential) in self.free.range(slots..) {
-            todo!()
+    pub fn new() -> RangeSet {
+        RangeSet {
+            capacity: 0,
+            ranges:   BTreeMap::new(),
+            free:     BTreeMap::new(),
         }
-        todo!()
     }
 
+    /// Adds some capacity to the heap
+    pub fn add_free_capacity(&mut self, slots: usize) {
+        self.free(Pointer(self.capacity as u64), slots);
+        self.capacity += slots;
+    }
+
+    pub fn new_with_free_capacity(slots: usize) -> RangeSet {
+        let mut empty = RangeSet::new();
+        empty.add_free_capacity(slots);
+        empty
+    }
+
+    /// Returns a pointer and the size to increase the allocation by.
+    /// The backing allocation size must be increased according to the returned size.
+    /// Do not call `add_free_capacity` with the returned size of this method,
+    /// because the allocation is used, not free.
+    pub fn mark_first(&mut self, slots: usize) -> (Pointer, usize) {
+        // try filling the smallest earliest gap possible.
+        if let Some((size, potential)) = self.free.range(slots..).next() {
+            let pointer = *potential.iter().next().unwrap();
+            println!("free slot, using pointer: {:?} of {}", pointer, size);
+            self.mark_smaller(pointer, slots);
+            println!("Done marking!");
+            return (pointer, 0);
+        }
+        // TODO: capacity not updating after large allocation!
+        // if the last range is a tail range, try extending it
+        if let Some((tail, size)) = self.ranges.iter().rev().next() {
+            // copy to please the borrow checker gods
+            let (tail, size) = (*tail, *size);
+            // this free range goes right up to the end
+            if tail.0 as usize + size == self.capacity {
+                self.mark(tail);
+                let remaining = slots - size;
+                self.capacity += remaining;
+                return (tail, remaining)
+            }
+        }
+
+        let pointer = Pointer(self.capacity as u64);
+        self.capacity += slots;
+        return (pointer, slots);
+    }
+
+    /// Mark a pointer for use reserving a certain number of slots,
+    /// returns the extra free space to the heap.
     pub fn mark_smaller(&mut self, pointer: Pointer, slots: usize) {
+        println!("marking smaller :)");
         // grab the full allocation
         let size = self.mark(pointer);
+        if size == slots { return; }
+        println!("reserving {} slots of {} total", slots, size);
         assert!(slots < size);
+        println!("letting go of {} extra slots", size - slots);
         // let go of the end; may cause minor fragmentation
         self.free(Pointer(pointer.0 + slots as u64), size - slots);
     }
 
-    pub fn mark(&mut self, pointer: Pointer) -> usize {
+    /// Mark a pointer for use, returns the size of the full allocation
+    fn mark(&mut self, pointer: Pointer) -> usize {
         // remove it from the ranges set, getting the size of the pointer
         let size = self.ranges.remove(&pointer).unwrap();
         // remove it from the free set, by inverse looking up by size
         assert!(self.free.get_mut(&size).unwrap().remove(&pointer));
-        // if that was the last item, remove the entry from the map.
+        // if the pointer was the last of a given size, remove the entry from the map
         if self.free.get(&size).unwrap().is_empty() {
+            println!("removing entry...");
             self.free.remove_entry(&size);
+            println!("done removing entry!");
         }
         // return the size of the marked pointer
         return size;
     }
 
-    pub fn free(&mut self, pointer: Pointer, slots: usize) {
+    /// Returns capacity that the heap can be shrunk by if freeing a tail allocation
+    pub fn free(&mut self, mut pointer: Pointer, mut slots: usize) -> usize {
+        if slots == 0 { println!("zero: {:?}", pointer); panic!("Zero slots!") }
+        println!("before merging pointer: {:?} of {}", pointer, slots);
+
         // merge it with any other nearby ranges
         // start with the range before
         if let Some((pointer_before, size)) = self.ranges.range(..pointer).rev().next() {
-            // if the free ranges are back-to-back, we merge them by extending the old range
-            if Pointer(pointer_before.0 + *size as u64) == pointer {
-                // remove the pointer from its old size in the free map
-                assert!(self.free.get_mut(size).unwrap().remove(pointer_before));
-                // remove the pointer from the ranges map
-                self.ranges.remove(pointer_before).unwrap();
+            println!("before: {:?}", pointer_before);
+            let (pointer_before, size) = (*pointer_before, *size);
+            // println!("{:?}", pointer_before.0 + size as u64);
 
+            // if the free ranges are back-to-back, we merge them by extending the old range
+            if Pointer(pointer_before.0 + size as u64) == pointer {
                 // use the new combined pointer
-                pointer = *pointer_before;
+                self.mark(pointer_before);
+                pointer = pointer_before;
                 slots = size + slots;
+                println!("before joined");
             }
         }
 
@@ -71,71 +132,212 @@ impl RangeSet {
         // pointer has not yet beed added to the ranges map,
         // so `pointer..` is technically exclusive
         if let Some((pointer_after, size)) = self.ranges.range(pointer..).next() {
-            if Pointer(pointer.0 + slots as u64) == *pointer_after {
-                // remove the pointer_after from its old size in the free map
-                self.free.get_mut(size).unwrap().remove(pointer_after);
-                // remove the pointer_after from the ranges map
-                self.ranges.remove(pointer_after).unwrap();
+            println!("after: {:?}", pointer_after);
+            let (pointer_after, size) = (*pointer_after, *size);
+
+            if Pointer(pointer.0 + slots as u64) == pointer_after {
                 // extend the pointer to be longer
+                self.mark(pointer_after);
                 slots += size;
+                println!("after joined");
             }
         }
 
+        println!("before check");
+        println!("end: {}", pointer.0 as usize + slots);
+        println!("actual: {}", self.capacity);
+        if pointer.0 as usize + slots == self.capacity {
+            self.capacity -= slots;
+            println!("returning early!");
+            return slots;
+        }
+        println!("after check");
+
         // add the pointer with its new size in the free map
-        self.free.get_mut(&slots).unwrap().insert(pointer);
         // add the pointer with its new size to the ranges map
-        assert!(self.ranges.insert(pointer, slots).is_none());
+        if let Some(s) = self.free.get_mut(&slots) {
+            s.insert(pointer);
+        } else {
+            let mut pointers = BTreeSet::new();
+            pointers.insert(pointer);
+            self.free.insert(slots, pointers);
+        }
+
+        println!("pointer: {:?}", pointer);
+        let o = self.ranges.insert(pointer, slots);
+        println!("overwritten: {:?}", o);
+        assert!(o.is_none());
+
+        // not a tail free, there still may be an allocation after this one, keep slots
+        return 0;
     }
 }
 
+#[derive(Debug)]
 pub struct Heap {
     data: Vec<u64>,
     free: RangeSet,
 }
 
 impl Heap {
-    fn is_free(&self, pointer: Pointer, slots: usize) -> bool {
-        todo!()
+    /// Constructs new empty heap
+    pub fn new() -> Heap {
+        Heap {
+            data: vec![],
+            free: RangeSet::new(),
+        }
     }
 
+    pub fn draw_free(&self) {
+        // println!("{:#?}", self);
+
+        println!("capacity: {}", self.free.capacity);
+        println!("data len: {}", self.data.len());
+        let lastk: usize = self.free.ranges.iter().rev().next().map(|(a, b)| a.0 + *b as u64).unwrap_or(0) as usize;
+        println!("rangemap: {:?}", lastk);
+        println!("rangemap: {:?}", self.free.ranges);
+        println!("free map: {:?}", self.free.free);
+        print!("|");
+        let mut old = 0;
+        for (key, value) in self.free.ranges.iter() {
+            print!("{}", "_".repeat(key.0 as usize - old));
+            print!("{}", "X".repeat(*value));
+            old = key.0 as usize;
+        }
+        print!("{}", "_".repeat(self.free.capacity - old));
+        println!("|");
+        assert!(lastk <= self.free.capacity);
+    }
+
+    /// Allocate a pointer of a given size.
+    /// Returns the smallest first allocation that will fit the pointer.
     pub fn alloc(&mut self, slots: usize) -> Pointer {
-
+        println!("slots: {}", slots);
+        // println!("heap: {:#?}", self);
+        let (pointer, extra_capacity) = self.free.mark_first(slots);
+        println!("marked first, pointer is: {:?}", pointer);
+        // increase the size of the allocation if needed.
+        self.data.extend((0..extra_capacity).map(|_| 0));
+        return pointer;
     }
 
+    // TODO: tail allocations.
+    /// Returns whether a pointer of a given size is free at a given point.
+    /// Used to determine whether reallocation in place is possible.
+    fn is_free(&self, pointer: Pointer, slots: usize) -> bool {
+        // get the first pointer before or at the one specified.
+        if let Some((p, free_range)) = self.free.ranges.range(..=pointer).rev().next() {
+            println!("first pointer before: {:?} of {}", p, free_range);
+            // check that the free range covers the range of the pointer in question
+            let p_end = p.0 as usize + free_range;
+            println!("free p_end: {}", p_end);
+            let pointer_end = pointer.0 as usize + slots;
+            println!("wanna pointer_end: {}", pointer_end);
+            // for a pointer to be free it must be in the range!
+            if p_end >= pointer_end
+                // TODO: tail allocations; need to increase the allocation size.
+                // || self.free.capacity == p_end
+                //     && self.free.capacity < pointer_end
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Reallocates an allocation to a larger size
+    /// Tries to reallocate in place, but moves the allocation if needed.
     pub fn realloc(&mut self, pointer: Pointer, old: usize, new: usize) -> Pointer {
+        println!("realloc free spots: {:?}", self.free.free);
         if new > old {
+            println!("new allocation is bigger: {} vs {}", new, old);
             // try allocation continiously
-            if self.is_free(Pointer(pointer.0 + old as u64), new - old) {
+            let tail = Pointer(pointer.0 + old as u64);
+            println!("tail: {:?} of {}", tail, new - old);
+            if self.is_free(tail, new - old) {
                 // increase the size of the current allocation
-                todo!();
+                self.free.mark_smaller(tail, new - old);
                 return pointer;
             }
 
             // TODO: free before reallocation might open up space before?
-            // reallocate
+            // reallocate new larger allocation, copy over data.
             let new_pointer = self.alloc(new);
             for slot in 0..old {
-                self.data[new_pointer.0 + slot] = self.data[old_pointer.0 + slot];
+                self.data[new_pointer.0 as usize + slot] = self.data[pointer.0 as usize + slot];
             }
-            // and free
+            // and free old small allocation
             self.free(pointer, old);
             return new_pointer;
         } else if old > new {
             // free back half of allocation
-            self.free(Pointer(pointer.0 + new), old - new);
-            return pointer;
+            self.free(Pointer(pointer.0 + new as u64), old - new);
         }
+
+        // they're equal, so do nothing
+        return pointer;
     }
 
-    pub fn read(&self, pointer: Pointer, slots: usize) -> &[u64] {
+    // Reads a single slot relative to a pointer.
+    pub fn read_slot(&self, pointer: Pointer, slot: usize) -> u64 {
+        self.data[pointer.0 as usize + slot]
+    }
 
+    // Reads a range of data.
+    pub fn read(&self, pointer: Pointer, slots: usize) -> &[u64] {
+        let start = pointer.0 as usize;
+        &self.data[start..(start + slots)]
     }
 
     pub fn write(&mut self, pointer: Pointer, item: &mut [u64]) -> Pointer {
-
+        // todo: pointer tagging, change `.0` to `.idx()` as add a method `.is_owned()`
+        todo!("Copy on write");
     }
 
     pub fn free(&mut self, pointer: Pointer, slots: usize) {
+        let unneeded_capacity = self.free.free(pointer, slots);
+        self.data.truncate(self.data.len() - unneeded_capacity);
+    }
+}
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn random_alloc_size(rng: &mut attorand::Rng) -> usize {
+         rng.next_byte() as usize + 1
+    }
+
+    #[test]
+    fn stress_test() {
+        let mut heap = Heap::new();
+        let mut pointers = BTreeMap::new();
+        let mut rng = attorand::Rng::new_default();
+
+        for i in 0..100000 {
+            println!("### Number {}", i);
+            let size = random_alloc_size(&mut rng);
+            let pointer = heap.alloc(size);
+            pointers.insert(i, (pointer, size));
+
+            let index = rng.next_u64_max((pointers.len() - 1) as u64) as usize;
+            if rng.next_bool() {
+                let (index, (to_modify, old_size)) = pointers.iter().nth(index).unwrap();
+                let index = *index;
+
+                if rng.next_bool() {
+                    let new_size = random_alloc_size(&mut rng);
+                    let pointer = heap.realloc(*to_modify, *old_size, new_size);
+                    pointers.insert(index, (pointer, new_size));
+                } else {
+                    heap.free(*to_modify, *old_size);
+                    pointers.remove(&index);
+                }
+            }
+        }
+
+        heap.draw_free();
     }
 }

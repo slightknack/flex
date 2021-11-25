@@ -3,5 +3,14 @@
 version = 3
 
 [[package]]
+name = "attorand"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e52c60c7d8ce607f23b016cad051b8a356dae29808b2aee08cb82659ad33310e"
+
+[[package]]
 name = "flex"
 version = "0.1.0"
+dependencies = [
+ "attorand",
+]
