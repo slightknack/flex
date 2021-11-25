@@ -280,12 +280,12 @@ pub mod tests {
     }
 
     #[test]
-    pub fn stress_test() {
+    pub fn stress_test_heap() {
         let mut heap = Heap::new();
         let mut pointers = BTreeMap::new();
         let mut rng = attorand::Rng::new_default();
 
-        for i in 0..1000 {
+        for i in 0..100000 {
             let size = random_alloc_size(&mut rng);
             let pointer = heap.alloc(size);
             pointers.insert(i, (pointer, size));
@@ -307,5 +307,31 @@ pub mod tests {
         }
 
         heap.draw_free();
+    }
+
+    #[test]
+    pub fn stress_test_native() {
+        let mut rng = attorand::Rng::new_default();
+        let mut pointers = BTreeMap::new();
+
+        for i in 0..100000 {
+            let size = random_alloc_size(&mut rng);
+            let pointer = vec![0; size];
+            pointers.insert(i, (pointer, size));
+
+            let index = rng.next_u64_max((pointers.len() - 1) as u64) as usize;
+            if rng.next_bool() {
+                let (index, _) = pointers.iter().nth(index).unwrap();
+                let index = *index;
+
+                if rng.next_bool() {
+                    let new_size = random_alloc_size(&mut rng);
+                    let pointer = vec![0; new_size];
+                    pointers.insert(index, (pointer, new_size));
+                } else {
+                    pointers.remove(&index);
+                }
+            }
+        }
     }
 }
