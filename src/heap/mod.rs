@@ -3,7 +3,7 @@ use crate::Slot;
 pub mod pointer;
 pub mod range_set;
 
-pub use pointer::{Pointer, RecordLayout};
+pub use pointer::Pointer;
 use range_set::RangeSet;
 
 #[derive(Debug)]
@@ -115,32 +115,18 @@ impl Heap {
         &self.data[start..(start + slots)]
     }
 
+    // TODO: figure out apis for reading and writing
+
+    pub fn write_slot(&self, pointer: Pointer, slots: usize)
+
     pub fn write(
         &mut self,
         pointer: Pointer,
         item: &mut [Slot],
+    ) -> Option<???> {
+        // can't write to a pointer we don't own! make a copy first.
+        if !pointer.is_owned() { return None; }
 
-    ) -> Pointer {
-        // todo: pointer tagging, change `.0` to `.idx()` as add a method `.is_owned()`
-        todo!("Copy on write");
-    }
-
-    /// copy a
-    pub fn copy_but(
-        &mut self,
-        pointer: Pointer,
-        slots:   usize,
-        record_layout: RecordLayout,
-    ) -> Pointer {
-        // SAFETY: These slots are initialized before returning.
-        let mut new_alloc = unsafe { self.alloc(slots) };
-        for slot in 0..slots {
-            if record_layout.is_pointer(slot) {
-                let slot_pointer = self.read_slot(pointer, slot);
-
-            }
-        }
-        todo!()
     }
 
     pub fn free(&mut self, pointer: Pointer, slots: usize) {

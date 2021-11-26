@@ -81,30 +81,3 @@ impl std::ops::Add<u64> for PointerIdx {
         PointerIdx(self.0 + other)
     }
 }
-
-// TODO: this or have data manually specify something along the lines of `Clone`?
-// the latter is what I'm leaning towards.
-
-/// Slots in a record can either be data (e.g. `Nat`/`u64`)
-/// or runtime-managed pointers. A [`PointerBitMask`] represents
-/// up to 64 slots in a record, telling the runtime whether the slot is data or a pointer.
-/// A pointer layout must be passed when writing to some data to the heap,
-/// in the case the pointer is not owned and the data needs to be deeply copied.
-pub struct RecordLayout(u64);
-
-impl RecordLayout {
-    /// Creates a new record layout from a list of whether the item is a pointer.
-    /// The 0th item in the list corresponds to the 0th field of the struct.
-    pub fn new(layout: &[bool]) -> RecordLayout {
-        let mut out = 0;
-        for bool in layout.iter().rev() {
-            out = (out << 1) | if *bool { 1 } else { 0 };
-        }
-        RecordLayout(out)
-    }
-
-    /// Returns whether a given slot is a pointer.
-    pub fn is_pointer(&self, slot: usize) -> bool {
-        ((self.0 >> slot) & 1) == 1
-    }
-}
