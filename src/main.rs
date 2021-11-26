@@ -1,26 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 mod heap;
-pub use heap::*;
+pub use heap::{Pointer, Heap};
 
-// pub struct Frame {
-//
-// }
-//
-// pub struct Stack {
-//     data: Vec<u64>,
-//     frames: Vec<Frame>,
-// }
-//
-// pub struct HandlerId(usize);
-//
-// pub struct Fiber {
-//     handlers: BTreeMap<HandlerId, Handler>,
-//     stack: Stack,
-//     heap:  Heap,
-//     parent: FiberId,
-// }
-//
+mod stack;
+// mod fiber;
+mod code;
+mod slot;
+
+pub use slot::Slot;
+
 // pub struct Code {
 //     bytes: Vec<u8>,
 // }

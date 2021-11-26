@@ -7,7 +7,7 @@ const POINTER: u64 = 0x7fffffffffffffff;
 
 impl Pointer {
     /// Create an owned pointer from an index.
-    fn new(idx: PointerIdx) -> Pointer {
+    pub(super) fn new(idx: PointerIdx) -> Pointer {
         let idx = idx.to_u64();
         assert!(idx <= POINTER);
         Pointer(OWNED | (POINTER & idx))
@@ -15,14 +15,14 @@ impl Pointer {
 
     /// Pointer arithmetic.
     /// Maintains ownership.
-    fn add(&self, slots: u64) -> Pointer {
+    pub(super) fn add(&self, slots: u64) -> Pointer {
         let new_index: u64 = self.to_idx().to_u64() + slots;
         assert!(new_index <= POINTER);
         Pointer((self.0 & OWNED) | new_index)
     }
 
     /// Return the internal index of the pointer.
-    fn to_idx(&self) -> PointerIdx {
+    pub(super) fn to_idx(&self) -> PointerIdx {
         PointerIdx(self.0 & POINTER)
     }
 
@@ -40,18 +40,30 @@ impl Pointer {
     pub fn borrow(&self) -> Pointer {
         Pointer(self.0 & POINTER)
     }
+
+    pub unsafe fn from_bits(bits: u64) -> Pointer {
+        Pointer(bits)
+    }
+
+    pub unsafe fn to_bits(self) -> u64 {
+        self.0
+    }
 }
 
-/// Used as a key in the maps
+/// Used as a key in the maps.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
-struct PointerIdx(u64);
+pub(super) struct PointerIdx(u64);
 
 impl PointerIdx {
-    fn to_usize(self) -> usize {
+    pub(super) fn new(idx: u64) -> PointerIdx {
+        PointerIdx(idx)
+    }
+
+    pub(super) fn to_usize(self) -> usize {
         self.0 as usize
     }
 
-    fn to_u64(self) -> u64 {
+    pub(super) fn to_u64(self) -> u64 {
         self.0
     }
 }
@@ -67,5 +79,32 @@ impl std::ops::Add<u64> for PointerIdx {
 
     fn add(self, other: u64) -> PointerIdx {
         PointerIdx(self.0 + other)
+    }
+}
+
+// TODO: this or have data manually specify something along the lines of `Clone`?
+// the latter is what I'm leaning towards.
+
+/// Slots in a record can either be data (e.g. `Nat`/`u64`)
+/// or runtime-managed pointers. A [`PointerBitMask`] represents
+/// up to 64 slots in a record, telling the runtime whether the slot is data or a pointer.
+/// A pointer layout must be passed when writing to some data to the heap,
+/// in the case the pointer is not owned and the data needs to be deeply copied.
+pub struct RecordLayout(u64);
+
+impl RecordLayout {
+    /// Creates a new record layout from a list of whether the item is a pointer.
+    /// The 0th item in the list corresponds to the 0th field of the struct.
+    pub fn new(layout: &[bool]) -> RecordLayout {
+        let mut out = 0;
+        for bool in layout.iter().rev() {
+            out = (out << 1) | if *bool { 1 } else { 0 };
+        }
+        RecordLayout(out)
+    }
+
+    /// Returns whether a given slot is a pointer.
+    pub fn is_pointer(&self, slot: usize) -> bool {
+        ((self.0 >> slot) & 1) == 1
     }
 }

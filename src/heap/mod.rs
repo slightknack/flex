@@ -1,18 +1,19 @@
+use crate::Slot;
+
 pub mod pointer;
 pub mod range_set;
 
-pub use pointer::Pointer;
-use pointer::PointerIdx;
+pub use pointer::{Pointer, RecordLayout};
 use range_set::RangeSet;
 
 #[derive(Debug)]
 pub struct Heap {
-    data: Vec<u64>,
+    data: Vec<Slot>,
     free: RangeSet,
 }
 
 impl Heap {
-    /// Constructs new empty heap
+    /// Constructs new empty heap.
     pub fn new() -> Heap {
         Heap {
             data: vec![],
@@ -20,18 +21,21 @@ impl Heap {
         }
     }
 
+    /// Dumps a representation of the heap to stdout.
+    /// Useful for general debugging.
     pub fn draw_free(&self) {
-        // print!("|");
+        print!("|");
         let mut old = 0;
         let mut unused = 0;
         for (key, value) in self.free.ranges.iter() {
-            // print!("{}", "_".repeat(key.to_idx().to_usize() - old));
-            // print!("{}", "X".repeat(*value));
+            print!("{}", "_".repeat(key.to_usize() - old));
+            print!("{}", "X".repeat(*value));
             unused += value;
-            // old = key.0 as usize;
+            old = key.to_usize();
         }
-        // print!("{}", "_".repeat(self.free.capacity - old));
-        // println!("|");
+        print!("{}", "_".repeat(self.free.capacity - old));
+        println!("|");
+
         println!("==== INFO ====");
         println!("heap size:       {} bytes", self.data.len() * 8);
         println!("total slots:     {} slots", self.data.len());
@@ -42,17 +46,32 @@ impl Heap {
 
     /// Allocate a pointer of a given size.
     /// Returns the smallest first allocation that will fit the pointer.
-    pub fn alloc(&mut self, slots: usize) -> Pointer {
+    ///
+    /// # Safety
+    /// The allocated pointer will point to garbage data.
+    /// This call must immediately be followed by a call to [`Heap::write`].
+    pub unsafe fn alloc(&mut self, slots: usize) -> Pointer {
         let (pointer, extra_capacity) = self.free.mark_first(slots);
 
         // increase the size of the allocation if needed.
-        self.data.extend((0..extra_capacity).map(|_| 0));
+        self.data.extend((0..extra_capacity).map(|_| unsafe { Slot::zero() }));
         return pointer;
     }
 
     /// Reallocates an allocation to a larger size
     /// Tries to reallocate in place, but moves the allocation if needed.
-    pub fn realloc(&mut self, pointer: Pointer, old: usize, new: usize) -> Pointer {
+    ///
+    /// # Safety
+    /// All previously allocated data will be present at the start of the new allocation.
+    /// For example, if you have an allocation `*x = ABC` of len 3,
+    /// and reallocate to len 5, the new allocation will be `*x = ABC__`.
+    ///
+    /// Likewise, if you decrease the size of the allocation, data will be truncated.
+    /// So `*x = ABC` of len 3 reallocated to len 1 would be `*x = A`.
+    ///
+    /// Like when using `Heap::alloc`, this call must be immediately be followed by
+    /// a call to [`Heap::write`] to fill the uninitialized portion of the new array.
+    pub unsafe fn realloc(&mut self, pointer: Pointer, old: usize, new: usize) -> Pointer {
         assert!(pointer.is_owned());
 
         if new > old {
@@ -68,8 +87,10 @@ impl Heap {
             // reallocate new larger allocation, copy over data.
             let new_pointer = self.alloc(new);
             for slot in 0..old {
-                self.data[new_pointer.to_idx().to_usize() + slot]
-                    = self.data[pointer.to_idx().to_usize() + slot];
+                self.data.swap(
+                    new_pointer.to_idx().to_usize() + slot,
+                    pointer.to_idx().to_usize() + slot,
+                );
             }
             // and free old small allocation
             self.free(pointer, old);
@@ -84,19 +105,42 @@ impl Heap {
     }
 
     // Reads a single slot relative to a pointer.
-    pub fn read_slot(&self, pointer: Pointer, slot: usize) -> u64 {
-        self.data[pointer.to_idx().to_usize() + slot]
+    pub fn read_slot(&self, pointer: Pointer, slot: usize) -> &Slot {
+        &self.data[pointer.to_idx().to_usize() + slot]
     }
 
     // Reads a range of data.
-    pub fn read(&self, pointer: Pointer, slots: usize) -> &[u64] {
+    pub fn read(&self, pointer: Pointer, slots: usize) -> &[Slot] {
         let start = pointer.to_idx().to_usize() as usize;
         &self.data[start..(start + slots)]
     }
 
-    pub fn write(&mut self, pointer: Pointer, item: &mut [u64]) -> Pointer {
+    pub fn write(
+        &mut self,
+        pointer: Pointer,
+        item: &mut [Slot],
+
+    ) -> Pointer {
         // todo: pointer tagging, change `.0` to `.idx()` as add a method `.is_owned()`
         todo!("Copy on write");
+    }
+
+    /// copy a
+    pub fn copy_but(
+        &mut self,
+        pointer: Pointer,
+        slots:   usize,
+        record_layout: RecordLayout,
+    ) -> Pointer {
+        // SAFETY: These slots are initialized before returning.
+        let mut new_alloc = unsafe { self.alloc(slots) };
+        for slot in 0..slots {
+            if record_layout.is_pointer(slot) {
+                let slot_pointer = self.read_slot(pointer, slot);
+
+            }
+        }
+        todo!()
     }
 
     pub fn free(&mut self, pointer: Pointer, slots: usize) {
@@ -109,6 +153,7 @@ impl Heap {
 
 #[cfg(test)]
 pub mod tests {
+    use std::collections::BTreeMap;
     use super::*;
 
     fn random_alloc_size(rng: &mut attorand::Rng) -> usize {
@@ -124,8 +169,10 @@ pub mod tests {
         let mut rng = attorand::Rng::new_default();
 
         for i in 0..STRESS_ITER {
+            if i % 100 == 0 { println!("{}", i); }
             let size = random_alloc_size(&mut rng);
-            let pointer = heap.alloc(size);
+            // SAFETY: data is never read
+            let pointer = unsafe { heap.alloc(size) };
             pointers.insert(i, (pointer, size));
 
             let index = rng.next_u64_max((pointers.len() - 1) as u64) as usize;
@@ -135,7 +182,8 @@ pub mod tests {
 
                 if rng.next_bool() {
                     let new_size = random_alloc_size(&mut rng);
-                    let pointer = heap.realloc(*to_modify, *old_size, new_size);
+                    // SAFETY: data is never read
+                    let pointer = unsafe { heap.realloc(*to_modify, *old_size, new_size) };
                     pointers.insert(index, (pointer, new_size));
                 } else {
                     heap.free(*to_modify, *old_size);
